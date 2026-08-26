@@ -1,0 +1,112 @@
+%% PV + Battery + VSI + Grid System — Parameter Script
+% Run this script BEFORE opening/simulating the Simulink model.
+% Every block should reference these variable names in its dialog boxes
+% instead of typed-in numbers. Edit values here, re-run the script,
+% then just hit Run in Simulink — no need to touch block dialogs again.
+%
+% As we build each new subsystem, add its parameters to the matching
+% section below and keep using descriptive prefixes (pv_, res_, boost_,
+% batt_, vsi_, grid_, load_) so variable names stay unambiguous once
+% the model gets big.
+%% ---- Solver / Powergui ----
+Ts = 1e-6;              % Fixed-step / powergui discrete sample time (s)
+
+%% ---- PV Array (Step 1) ----
+pv_Nser = 1;             % Series modules per string
+pv_Npar = 1;             % Parallel strings
+pv_irradiance = 1000;    % W/m^2 (feeds Constant -> PV Array input 1)
+pv_temperature = 25;     % degC  (feeds Constant1 -> PV Array input 2)
+
+% Reference module electrical ratings (1Soltech 1STH-215-P defaults —
+% only relevant if you ever rebuild the module from scratch instead of
+% using the preset; the PV Array block already stores these internally
+% once you pick/keep the module, so this is just for our own reference
+% when sizing the test load below)
+pv_Vm = 29;               % V, voltage at max power (single module)
+pv_Im = 7.35;             % A, current at max power (single module)
+
+%% ---- Cpv: input capacitor at PV array terminals ----
+% CRITICAL: required for solver stability whenever an inductor (R1/L1) is
+% the load — without this, the discrete solver produces NaN immediately.
+pv_Cpv = 100e-6;           % F
+
+%% ---- Test load (Step 1 resistive load, temporary) ----
+% Rough load to sit near the array's operating point.
+% R = (pv_Vm * pv_Nser) / (pv_Im * pv_Npar)
+res_test_load = (pv_Vm * pv_Nser) / (pv_Im * pv_Npar);
+
+fprintf('pv_system_params loaded.\n');
+fprintf('  Array config: %d series x %d parallel\n', pv_Nser, pv_Npar);
+fprintf('  Suggested test resistor: %.3f ohm\n', res_test_load);
+
+%% ---- Boost Converter + MPPT (Step 2 — VERIFIED WORKING) ----
+boost_R1 = 0.1;            % ohm, series resistance (R1)
+boost_L1 = 1e-3;           % H, series inductance (L1)
+boost_Cdc = 1e-4;          % F, DC bus capacitor (plain Capacitor block, not Series RLC)
+boost_Fsw = 10000;         % Hz, PWM switching frequency
+
+% MPPT (P&O, direction-based, with low-pass filtering on Vpv/Ipv)
+mppt_Ts = 0.1;             % s, MPPT decision update rate (must be >> circuit settling time)
+mppt_dD = 0.001;           % duty step size per decision
+mppt_Dold_init = 0.75;     % seed near known MPP (found via manual duty sweep) instead of 0.5,
+                            % since P&O struggled to find MPP from a cold start across the
+                            % full duty range — this is a coarse-start + fine-P&O approach
+mppt_filter_alpha = 0.1;   % EMA filter strength on raw Vpv/Ipv before MPPT judges them
+
+% Temporary DC-bus dump load (stands in for battery/VSI until those are built)
+load_Rdc = 100;            % ohm
+
+%% ---- Battery (Step 3 — VERIFIED WORKING) ----
+batt_nominal_voltage = 48;    % V
+batt_rated_capacity = 100;    % Ah
+batt_type = 'Lithium-Ion';    % chemistry
+batt_test_load_R = 10;        % ohm, temporary isolation-test load only
+
+%% ---- Bidirectional Buck-Boost / Charge Control (Step 4) ----
+%% ---- Bidirectional Buck-Boost / Charge Control (Step 4 — VERIFIED WORKING) ----
+bb_R2 = 0.1;              % ohm (same reasoning as boost_R1 — small parasitic value)
+bb_L2 = 1e-3;              % H
+bb_Cb = 1e-4;              % F, plain Capacitor block at battery-side node
+bb_series_R = 0.01;        % ohm, small series resistor fixing the "voltage source parallel with capacitor" error
+
+% Charge controller (PI on Vdc)
+%% ---- Charge controller (RETUNED for full-system stability) ----
+cc_Kp = 0.002;
+cc_Ki = 0.02;
+cc_max_duty_step = 0.005;
+
+%% ---- PWM_DeadTime block (replaces PWM Generator + NOT + Switches) ----
+pwm_dt_Fsw = 10000;
+pwm_dt_Ts = 1e-6;
+pwm_dt_deadtime_frac = 0.02;
+
+%% ---- IGBT1/IGBT2 snubbers (BuckBoost_Battery) ----
+bb_snubber_Rs = 500;
+bb_snubber_Cs = 250e-9;          % must match MATLAB Function block's Sample time
+cc_Vdc_ref = 60;      % V, target DC bus voltage
+cc_Ts = 1e-3;          % s, charge controller sample time
+%% ---- VSI + Grid Control (Step 5+) ----
+% Grid_AC (Step 5a — PLACEHOLDER values, standalone topology test only.
+%          Revisit once VSI output voltage is known in 5b/5c.)
+grid_Vrms_test = 100;   % V, line-line RMS — round test number, not a spec
+grid_freq = 60;         % Hz — pick 50 instead if that's your target grid; arbitrary otherwise
+grid_Rs1 = 0.1;         % ohm — kept consistent with R1/R2 elsewhere in the model
+grid_Ls1 = 1e-3;        % H  — kept consistent with L1/L2 elsewhere in the model
+xfmr_ratio_test = 1;    % unity turns ratio for both transformers, for now —
+                          % just proving the topology passes power correctly;
+                          % real ratio gets set once VSI's line-line output is known
+
+% Transformer (Grid_AC, Step 5a — placeholder, 1:1 pass-through)
+xfmr_Sn_test = 5000;   % VA, nominal power (test scale, not a spec)
+xfmr_V_test  = grid_Vrms_test;  % V, Ph-Ph — same on both windings for 1:1
+xfmr_R_pu    = 0.002;  % pu leakage resistance, typical placeholder
+xfmr_L_pu    = 0.08;   % pu leakage reactance, typical placeholder
+% vsi_Cdc = ...
+% grid_Vm1 = ...
+% grid_freq = ...
+vsi_freq= 3000;
+
+%% ---- Load (final stage) ----
+% load_P01 = ...
+% load_Q01 = ...
+% load_RL1 = ...
